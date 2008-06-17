@@ -41,14 +41,27 @@ class Migrator
       mbox.each_port do |port|
         msg_num += 1
         begin
-          msg = port.read_all
+          mail = TMail::Mail.new(port)
+          if mail.date.nil?
+            # Eudora mbx files don't put the date in a Date: header
+            # Instead they put it in the From line, like this:
+            # From ???@??? Mon Oct 13 07:26:26 2003
+            # We rebuild the message with the added date header.
+            # The port (tmp file) has its utime set by TMail.
+            mail.date =  File.mtime(port.filename)
+            print "using #{mail.date} from mtime\n"
+            msg = mail.encoded
+          else
+            # Just use the message as read
+            msg = port.read_all
+          end
           if is_mail_message?(msg)
-            print msg
             print "uploading msg #{msg_num} in #{source_file}\n"
+            # print msg
             status = @migration.uploadSingleMessage(msg, @props, @labels)
             p status
             @count += 1 if status[1][:code] == '201'
-          sleep(1)
+            sleep(1)
           else
             print "msg #{msg_num} is not a mail message\n"
           end
