@@ -8,6 +8,8 @@ require 'tmail'
 require 'appsforyourdomain/migrationapi'
 
 class Migrator
+  attr_accessor :dry_run, :count
+  
   def initialize(domain, user, email, passwd, type, props, labels, source)
     @domain = domain
     @user = user
@@ -17,6 +19,8 @@ class Migrator
     @props = props
     @labels = labels
     @source = source
+    @dry_run = false
+    @count = 0
   end
   
   def is_mbox?
@@ -50,6 +54,13 @@ class Migrator
             # The port (tmp file) has its utime set by TMail.
             mail.date =  File.mtime(port.filename)
             print "using #{mail.date} from mtime\n"
+            
+            # Eudora (and others?) don't specify html email.
+            # We assume text/html content-type if body begins with <html>.
+            if  mail.body =~ /^\s*\<html\>/
+              print "setting text/html content type\n"
+              mail.content_type = 'text/html'
+            end
             msg = mail.encoded
           else
             # Just use the message as read
@@ -57,16 +68,22 @@ class Migrator
           end
           if is_mail_message?(msg)
             print "uploading msg #{msg_num} in #{source_file}\n"
-            # print msg
-            status = @migration.uploadSingleMessage(msg, @props, @labels)
-            p status
-            @count += 1 if status[1][:code] == '201'
+            if @dry_run
+              print msg
+            else
+              status = @migration.uploadSingleMessage(msg, @props, @labels)
+              p status
+              if !status.nil? && !status[1].nil? && status[1][:code] == '201'
+                @count += 1 
+              end
+            end
             sleep(1)
           else
             print "msg #{msg_num} is not a mail message\n"
           end
         rescue
           print "could not read msg #{msg_num}\n"
+          print $!
         end
       end
     rescue
