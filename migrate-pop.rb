@@ -72,9 +72,12 @@ class Migrator
               print msg
             else
               status = @migration.uploadSingleMessage(msg, @props, @labels)
-              p status
               if !status.nil? && !status[1].nil? && status[1][:code] == '201'
                 @count += 1 
+                print "msg #{msg_num} uploaded\n"
+              else
+                print "msg #{msg_num} not uploaded\n"
+                p status
               end
             end
             sleep(1)
@@ -82,8 +85,7 @@ class Migrator
             print "msg #{msg_num} is not a mail message\n"
           end
         rescue
-          print "could not read msg #{msg_num}\n"
-          print $!
+          print "could not read/upload msg #{msg_num}\n"
         end
       end
     rescue
