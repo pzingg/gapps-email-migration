@@ -1,6 +1,33 @@
 #!/usr/bin/ruby
 
-# ruby migrate-pop.rb -d example.com -e admin@example.com -p passwd -u pop_user -t apple --inbox path_to/INBOX.mbox
+# Example usage: 
+# ruby migrate-pop.rb -d example.com -e admin@example.com -p passwd \
+#   -u pop_user -t apple --inbox path_to/INBOX.mbox
+
+# The simple parser below will handle UNIX-style .mbx files (multiple messages
+# in one file), a directory of individual messages ("maildir"), or Apple's
+# .mbox directory tree containing .emlx files (email messages wrapped with 
+# metadata).
+#
+# After a few attempts, I conclude that Eudora mbx files are not clean enough 
+# use the standard TMail::UNIXMbox parser.  I recommend Eudora Mailbox Cleaner
+# for Macintosh, available from
+#
+# http://homepage.mac.com/aamann/Eudora_Mailbox_Cleaner.htm
+#
+# or Eudora Rescue for Windows, from:
+#
+# http://qwerky.50webs.com/eudorarescue 
+# 
+# I used EMC to convert to Thunderbird, and then this program to migrate
+# from the converted files.  Even the EMC-converted file was not clean 
+# enough, so I resorted to a perl utility, mb2md
+#
+# http://batleth.sapienti-sat.org/projects/mb2md/
+#
+# After running this on the EMC-converted .mbx file, I upload the 
+# contents of the Maildir/cur directory.
+
 
 require 'rubygems'
 require 'getoptlong'
@@ -53,7 +80,6 @@ class Migrator
             # We rebuild the message with the added date header.
             # The port (tmp file) has its utime set by TMail.
             mail.date =  File.mtime(port.filename)
-            print "using #{mail.date} from mtime\n"
             
             # Eudora (and others?) don't specify html email.
             # We assume text/html content-type if body begins with <html>.
@@ -68,6 +94,8 @@ class Migrator
           end
           if is_mail_message?(msg)
             print "uploading msg #{msg_num} in #{source_file}\n"
+            print "#{mail.subject}\n"
+            print "#{mail.date}\n"
             if @dry_run
               print msg
             else
@@ -80,7 +108,7 @@ class Migrator
                 p status
               end
             end
-            sleep(1)
+            sleep(0.5)
           else
             print "msg #{msg_num} is not a mail message\n"
           end
@@ -118,24 +146,30 @@ class Migrator
       next if f == '.' || f == '..'
       path = File.join(source_dir, f)
       if File.file?(path)
-        if f =~ /\.emlx$/
-          # Handle .emlx formatted mails 
-          msg = read_emlx(path)
-        else
-          # Handle individual messages in a maildir
-          msg = File.read(path)
-        end
-        if is_mail_message?(msg)
-          print "uploading #{path}\n"
-          begin
-            status = @migration.uploadSingleMessage(msg, @props, @labels)
-            p status
-            @count += 1 if status[1][:code] == '201'
-          rescue
+        begin
+          if f =~ /\.emlx$/
+            # Handle .emlx formatted mails 
+            msg = read_emlx(path)
+          else
+            # Handle individual messages in a maildir
+            msg = File.read(path)
           end
-          sleep(1)
-        else
-          print "not a mail message: #{path}\n"
+          if is_mail_message?(msg)
+            print "uploading #{path}\n"
+            status = @migration.uploadSingleMessage(msg, @props, @labels)
+            if !status.nil? && !status[1].nil? && status[1][:code] == '201'
+              @count += 1 
+              print "#{path} uploaded\n"
+            else
+              print "#{path} not uploaded\n"
+              p status
+            end
+            sleep(0.5)
+          else
+            print "#{path} is not a mail message\n"
+          end
+        rescue
+          print "could not read/upload #{path}\n"
         end
       elsif File.directory?(path)
         # Recurse.  In Tiger, .emlx files are inside the Messages sub-folder
