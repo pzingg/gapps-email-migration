@@ -1,9 +1,13 @@
 #!/usr/bin/ruby
 
-# Example usage: 
+# Copyright 2008 Peter F. Zingg--may be freely used without restriction.
+# 
+# A utility to upload a batch of (POP or IMAP) mail messages to a 
+# Google Apps mail store using the Email Migration API. Example usage:
+#
 # ruby migrate-pop.rb -d example.com -e admin@example.com -p passwd \
 #   -u pop_user -t apple --inbox path_to/INBOX.mbox
-
+#
 # The simple parser below will handle UNIX-style .mbx files (multiple messages
 # in one file), a directory of individual messages ("maildir"), or Apple's
 # .mbox directory tree containing .emlx files (email messages wrapped with 
@@ -11,7 +15,7 @@
 #
 # After a few attempts, I conclude that Eudora mbx files are not clean enough 
 # use the standard TMail::UNIXMbox parser.  I recommend Eudora Mailbox Cleaner
-# for Macintosh, available from
+# for Macintosh, available from:
 #
 # http://homepage.mac.com/aamann/Eudora_Mailbox_Cleaner.htm
 #
@@ -19,15 +23,14 @@
 #
 # http://qwerky.50webs.com/eudorarescue 
 # 
-# I used EMC to convert to Thunderbird, and then this program to migrate
-# from the converted files.  Even the EMC-converted file was not clean 
-# enough, so I resorted to a perl utility, mb2md
+# I used EMC to convert to a Mozilla-Thunderbird-compatible .mbx file.
+# Even the EMC-converted file was not clean enough, so I then resorted to a 
+# perl utility, mb2md.pl, from:
 #
 # http://batleth.sapienti-sat.org/projects/mb2md/
 #
 # After running this on the EMC-converted .mbx file, I upload the 
-# contents of the Maildir/cur directory.
-
+# contents of the exported ~/Maildir/cur directory with "-t maildir".
 
 require 'rubygems'
 require 'getoptlong'
