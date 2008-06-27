@@ -12,7 +12,9 @@
 # in one file), a directory of individual messages ("maildir"), or Apple's
 # .mbox directory tree containing .emlx files (email messages wrapped with 
 # metadata).
-#
+
+# Exporting from Eudora (In.mbx and Out.mbx files on Windows; In and Out on Mac)
+# 
 # After a few attempts, I conclude that Eudora mbx files are not clean enough 
 # use the standard TMail::UNIXMbox parser.  I recommend Eudora Mailbox Cleaner
 # for Macintosh, available from:
@@ -24,6 +26,7 @@
 # http://qwerky.50webs.com/eudorarescue 
 # 
 # I used EMC to convert to a Mozilla-Thunderbird-compatible .mbx file.
+# These end up in ~/Library/Thunderbird/Profiles/*/Mail/Local Folders/*.sbd
 # Even the EMC-converted file was not clean enough, so I then resorted to a 
 # perl utility, mb2md.pl, from:
 #
@@ -31,6 +34,22 @@
 #
 # After running this on the EMC-converted .mbx file, I upload the 
 # contents of the exported ~/Maildir/cur directory with "-t maildir".
+
+# Exporting from Outlook (.pst file)
+# 
+# Use the open source readpst / libpst project, available from:
+#
+# http://alioth.debian.org/projects/libpst
+
+# Exporting from Entourage (Database file)
+# 
+# Use a freeware AppleScript, Export Folders, from:
+#
+# http://scriptbuilders.net/files/exportfolders1.1.html
+#
+# After exporting, these MBOX files must have CR line endings changed
+# to LF.  I use crlf, a shell script (with IFS modification) to 
+# get this done.
 
 require 'rubygems'
 require 'getoptlong'
@@ -40,7 +59,7 @@ require 'appsforyourdomain/migrationapi'
 class Migrator
   attr_accessor :dry_run, :count
   
-  def initialize(domain, user, email, passwd, type, props, labels, source)
+  def initialize(domain, user, email, passwd, from, type, props, labels, source)
     @domain = domain
     @user = user
     @email = email
@@ -49,6 +68,7 @@ class Migrator
     @props = props
     @labels = labels
     @source = source
+    @default_from = from
     @dry_run = false
     @count = 0
   end
@@ -57,13 +77,140 @@ class Migrator
     @type == 'mbox'
   end
   
+  def is_apple_mail?
+    @type == 'apple'
+  end
+  
+  def is_outlook?
+    @type == 'outlook'
+  end
+  
+  def is_file?
+    @type == 'file'
+  end
+  
   def do_migration
     @migration = AppsForYourDomain::EmailMigrationAPI.new(@domain, @user, @email, @passwd)
     if is_mbox?
       upload_mbox_tree(@source)
+    elsif is_apple_mail?
+      # In Tiger, .emlx files are inside the Messages sub-folder
+      upload_maildir(File.join(@source, 'Messages'))
+    elsif is_file?
+      upload_mail_file(@source)
     else
       upload_maildir(@source)
     end
+  end
+
+  def read_emlx(path)
+    msg = nil
+    File.open(path, "r") do |f|
+      msg_size = f.readline.chomp.to_i
+      return nil unless msg_size > 0
+      msg = f.read(msg_size)
+    end
+    msg
+  end
+
+  def is_mail_message?(str)
+    !str.nil? && str.match(/^[-A-Za-z0-9]+: /)
+  end
+  
+  def parse_addresses(str)
+    addrs = [ ]
+    str.split(/;/).each do |addr|
+      addr_strip = addr.strip.gsub(/^['"]|['"]$/, "")
+      begin
+        a = TMail::Address.parse(addr_strip)
+        addrs.push(a) 
+      rescue TMail::SyntaxError
+        print "can't parse #{addr_strip}\n"
+        fake_addr = addr_strip.downcase.gsub(/[^a-z0-9_]+/, ".").gsub(/^[.]+|[.]+$/, "")
+        a = TMail::Address.parse("#{fake_addr}\@unknown.com")
+        a.name = addr_strip
+        addrs.push(a)
+      end
+    end
+    addrs
+  end
+
+  # Without these patches, Google will report "badly formed message"
+  # or invalid RFC822 route errors.  We also add the time stamp if 
+  # it is missing.
+  def patch_mail_port(port)
+    return nil if port.nil?
+
+    msg = nil
+    use_raw_message = true
+    begin
+      mail = TMail::Mail.new(port)
+            
+      if mail.to.nil?
+        use_raw_message = false
+        if port.read_all.match(/To: (.+)\n/)
+          to_addresses = parse_addresses($1)
+          mail.to = to_addresses
+          print "patching to addresses: #{to_addresses.join(', ')}\n"
+        else
+          mail.to = "unknown@unknown.com"
+          print "patching to addresses: #{mail.to}\n"
+        end
+      end
+      
+      if mail.from.nil?
+        use_raw_message = false
+        mail.from = @default_from
+        print "patching from address: #{mail.from}\n"
+      end
+      
+      if mail.date.nil?
+        use_raw_message = false
+        # Eudora mbx files don't put the date in a Date: header
+        # Instead they put it in the From line, like this:
+        # From ???@??? Mon Oct 13 07:26:26 2003
+        # We rebuild the message with the added date header.
+        # The port (tmp file) has its utime set by TMail.
+        mail.date =  File.mtime(port.filename)
+        print "patching date: #{mail.date}\n"
+      end
+      
+      # Eudora (and others?) don't specify html email.
+      # We assume text/html content-type if body begins with <html>.
+      if mail.body =~ /^\s*\<html\>/ && !mail.content_type =~ /html/
+        use_raw_message = false
+        print "setting text/html content type\n"
+        mail.content_type = 'text/html'
+        print "patching content type: #{mail.content_type}\n"
+      end
+      
+      if use_raw_message
+        # Just use the message as read
+        msg = port.read_all
+      else
+        msg = mail.encoded
+      end
+    rescue
+      print "could not parse mail message: #{$!}\n"
+    end
+    
+    msg
+  end
+  
+  def patch_mail_file(path)
+    port = nil
+    begin
+      if path =~ /\.emlx$/
+        # Handle .emlx formatted mails 
+        str = read_emlx(path)
+        port = TMail::StringPort.new(str) if !str.nil? && !str.empty?
+      elsif !is_apple_mail?
+        # Handle individual messages in a maildir
+        port = TMail::FilePort.new(path)
+      end
+    rescue
+    end
+    return patch_mail_port(port)
   end
 
   # Uploads a unix mbox file
@@ -74,27 +221,8 @@ class Migrator
       print "opened mbox file #{source_file}\n"
       mbox.each_port do |port|
         msg_num += 1
+        msg = patch_mail_port(port)
         begin
-          mail = TMail::Mail.new(port)
-          if mail.date.nil?
-            # Eudora mbx files don't put the date in a Date: header
-            # Instead they put it in the From line, like this:
-            # From ???@??? Mon Oct 13 07:26:26 2003
-            # We rebuild the message with the added date header.
-            # The port (tmp file) has its utime set by TMail.
-            mail.date =  File.mtime(port.filename)
-            
-            # Eudora (and others?) don't specify html email.
-            # We assume text/html content-type if body begins with <html>.
-            if  mail.body =~ /^\s*\<html\>/
-              print "setting text/html content type\n"
-              mail.content_type = 'text/html'
-            end
-            msg = mail.encoded
-          else
-            # Just use the message as read
-            msg = port.read_all
-          end
           if is_mail_message?(msg)
             print "uploading msg #{msg_num} in #{source_file}\n"
             print "#{mail.subject}\n"
@@ -144,63 +272,58 @@ class Migrator
   
   # Uploads emlx messages inside a Tiger-style .mbox directory tree.
   # Also uploads regular message files inside a maildir-style directory.
+  def upload_mail_file(path)
+    msg = nil
+    begin
+      msg = patch_mail_file(path)
+      if is_mail_message?(msg)
+        print "uploading #{path}\n"
+        if @dry_run
+          # print msg
+        else
+          status = @migration.uploadSingleMessage(msg, @props, @labels)
+          if !status.nil? && !status[1].nil? && status[1][:code] == '201'
+            @count += 1 
+            print "#{path} uploaded\n"
+          else
+            print "#{path} not uploaded\n"
+            p status
+          end
+        end
+        sleep(0.5)
+      else
+        print "#{path} is not a mail message\n"
+      end
+    rescue
+      print "could not read/upload #{path}\n"
+    end
+    msg
+  end
+  
+  # Uploads emlx messages inside a Tiger-style .mbox directory tree.
+  # Also uploads regular message files inside a maildir-style directory.
   def upload_maildir(source_dir)
     Dir.new(source_dir).each do |f|
       next if f == '.' || f == '..'
       path = File.join(source_dir, f)
       if File.file?(path)
-        begin
-          if f =~ /\.emlx$/
-            # Handle .emlx formatted mails 
-            msg = read_emlx(path)
-          else
-            # Handle individual messages in a maildir
-            msg = File.read(path)
-          end
-          if is_mail_message?(msg)
-            print "uploading #{path}\n"
-            status = @migration.uploadSingleMessage(msg, @props, @labels)
-            if !status.nil? && !status[1].nil? && status[1][:code] == '201'
-              @count += 1 
-              print "#{path} uploaded\n"
-            else
-              print "#{path} not uploaded\n"
-              p status
-            end
-            sleep(0.5)
-          else
-            print "#{path} is not a mail message\n"
-          end
-        rescue
-          print "could not read/upload #{path}\n"
-        end
-      elsif File.directory?(path)
-        # Recurse.  In Tiger, .emlx files are inside the Messages sub-folder
+        upload_mail_file(path)
+      elsif File.directory?(path) && !is_apple_mail?
+        # Recurse.          
         upload_maildir(path)
       end
     end
   end
+  
 end
 
-def is_mail_message?(str)
-  str.match(/^[-A-Za-z0-9]+: /)
-end
-
-def read_emlx(path)
-  msg = nil
-  File.open(path, "r") do |f|
-    msg_size = f.readline.chomp.to_i
-    return nil unless msg_size > 0
-    msg = f.read(msg_size)
-  end
-  return msg
-end
 
 opts = GetoptLong.new(
   [ '--draft',    '-a', GetoptLong::NO_ARGUMENT ],
   [ '--domain',   '-d', GetoptLong::REQUIRED_ARGUMENT ],
   [ '--admin-email', '-e', GetoptLong::REQUIRED_ARGUMENT ],
-  [ '--starred',  '-f', GetoptLong::NO_ARGUMENT ],
+  [ '--starred',  '-x', GetoptLong::NO_ARGUMENT ],
+  [ '--from',     '-f', GetoptLong::REQUIRED_ARGUMENT ],
   [ '--help',     '-h', GetoptLong::NO_ARGUMENT ],
   [ '--inbox',    '-i', GetoptLong::NO_ARGUMENT ],
   [ '--label',    '-l', GetoptLong::REQUIRED_ARGUMENT ],
@@ -222,10 +345,13 @@ def usage
   puts "  -u, --user:        user name (without domain) to migrate mail to"
   puts "  mailbox_or_dir:    source folder or mbox file"
   puts "Other options:"
+  puts "  -f, --from:        if missing, email 'From:' value"
   puts "  -t, --type:        type of message source (default is apple):"
   puts "     apple   (folder containing Messages folder with .emlx files)"
   puts "     maildir (folder tree with email message files)"
+  puts "     file    (one email message in a file)"
   puts "     mbox    (single UNIX mbox file with multiple messages)"
+  puts "     outlook (mbox that needs help)"
   puts "  -l, --label:       tag with label (can use multiple labels)"
   puts "Optional message flags (without arguments):"
   puts "  --inbox:           migrate to GMail Inbox folder"
@@ -240,6 +366,7 @@ domain = nil
 email = nil
 passwd = nil
 user = nil
+from = nil
 type = 'apple'
 dest = nil
 props = []
@@ -249,6 +376,8 @@ opts.each do |opt, arg|
   when '--help'
     usage
     exit
+  when '--from'
+    from = arg
   when '--domain'
     domain = arg
   when '--admin-email'
@@ -282,8 +411,9 @@ if ARGV.length != 1 || user.nil? || domain.nil? || email.nil? || passwd.nil?
   usage
   exit
 end
+from = "#{user}\@#{domain}" if from.nil?
 
 source = ARGV.shift
-m = Migrator.new(domain, user, email, passwd, type, props, labels, source)
+m = Migrator.new(domain, user, email, passwd, from, type, props, labels, source)
 m.do_migration
 
