@@ -212,7 +212,18 @@ class Migrator
     end
     return patch_mail_port(port)
   end
-
+  
+  # Google sends a 503 message if server is busy
+  def upload_with_retries(msg)
+    status = nil
+    1.upto(5) do |i|
+      status = @migration.uploadSingleMessage(msg, @props, @labels)
+      break if status.nil? || status[1].nil? || status[1][:code] != '503'
+      sleep(30)
+    end
+    status
+  end
+  
   # Uploads a unix mbox file
   def upload_mbox(source_file)
     msg_num = 0
@@ -230,9 +241,9 @@ class Migrator
             if @dry_run
               print msg
             else
-              status = @migration.uploadSingleMessage(msg, @props, @labels)
+              status = upload_with_retries(msg)
               if !status.nil? && !status[1].nil? && status[1][:code] == '201'
-                @count += 1 
+                @count += 1
                 print "msg #{msg_num} uploaded\n"
               else
                 print "msg #{msg_num} not uploaded\n"
@@ -281,7 +292,7 @@ class Migrator
         if @dry_run
           # print msg
         else
-          status = @migration.uploadSingleMessage(msg, @props, @labels)
+          status = upload_with_retries(msg)
           if !status.nil? && !status[1].nil? && status[1][:code] == '201'
             @count += 1 
             print "#{path} uploaded\n"
